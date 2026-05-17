@@ -17,6 +17,9 @@ dependencies = [
 test = [
     "pytest>=7.0",
 ]
+notebook = [
+    "matplotlib>=3.7",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

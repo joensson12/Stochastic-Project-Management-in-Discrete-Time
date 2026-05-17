@@ -148,6 +148,17 @@ def test_shifted_poisson_project_cdf_for_parallel_independent_paths() -> None:
     )
 
 
+def test_shifted_poisson_project_cdf_is_zero_below_deterministic_path_minimum() -> None:
+    project = Project(sample_count=1)
+    project.add_work_package(1, ShiftedPoissonDuration(lambda_=1.0, a=2))
+    project.add_work_package(2, ShiftedPoissonDuration(lambda_=1.0, a=3))
+    project.add_work_package(3, ShiftedPoissonDuration(lambda_=1.0, a=7))
+    project.add_dependency(1, 2)
+
+    assert project.project_completion_cdf_shifted_poisson(t=6) == 0.0
+    assert project.project_completion_cdf_shifted_poisson(t=7) > 0.0
+
+
 def test_shifted_poisson_project_cdf_groups_shared_path_incidence() -> None:
     project = Project(sample_count=1)
     project.add_work_package(1, ShiftedPoissonDuration(lambda_=0.5, a=0))

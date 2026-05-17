@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
-from math import exp, floor, lgamma, log
+from numbers import Integral
 from typing import Callable, Sequence
 
 import networkx as nx
@@ -16,7 +16,13 @@ from spm.work_package import WorkPackage
 
 
 BYTES_PER_UINT32 = np.dtype(np.uint32).itemsize  # One D_i sample is stored as one uint32.
+BYTES_PER_UINT64 = np.dtype(np.uint64).itemsize  # One sampled predecessor ID is stored as one uint64.
+BYTES_PER_SIM_ACTIVITY_SAMPLE = (  # Conservative storage estimate for full project-time simulation.
+    5 * BYTES_PER_UINT32  # D_i, S_i dict, T_i dict, public starts matrix, public finishes matrix.
+    + BYTES_PER_UINT64  # p_i, the sampled predecessor used for critical path reconstruction.
+)
 GIB = 1024**3  # Memory budgets are expressed in binary gigabytes.
+PROBABILITY_DTYPE = np.longdouble  # Use the widest floating type NumPy exposes on this platform.
 
 # The predecessor vectors store work-package IDs, which are positive. This
 # largest uint64 value therefore represents the mathematical empty predecessor
@@ -54,12 +60,14 @@ class Project:
         max_memory_bytes: int | None = None,
         memory_provider: Callable[[], int] | None = None,
     ) -> None:
-        if sample_count is not None and sample_count <= 0:
+        if sample_count is not None and (
+            not isinstance(sample_count, Integral) or sample_count <= 0
+        ):
             raise ValueError("sample_count must be positive when provided.")
         if max_memory_bytes is not None and max_memory_bytes <= 0:
             raise ValueError("max_memory_bytes must be positive when provided.")
 
-        self.sample_count = sample_count  # Common Monte Carlo dimension n for every D_i.
+        self.sample_count = int(sample_count) if sample_count is not None else None  # Common sample dimension n.
         self.max_memory_bytes = max_memory_bytes  # Optional cap on the automatic memory budget.
         self._memory_provider = memory_provider or _system_memory_bytes  # Source for total RAM.
         self.rng = np.random.default_rng(rng_seed)  # Random generator used for all sampled variables.
@@ -73,8 +81,9 @@ class Project:
         duration_model: DurationDistribution,
     ) -> None:
         """Add activity i with its duration distribution D_i."""
-        if not isinstance(work_package_id, int):
+        if not isinstance(work_package_id, Integral):
             raise TypeError("work_package_id must be an integer.")
+        work_package_id = int(work_package_id)  # Normalize NumPy integer scalars to Python int.
         if work_package_id <= 0:
             raise ValueError("work_package_id must be positive.")
         if work_package_id in self.work_packages:
@@ -91,8 +100,10 @@ class Project:
 
         This first prototype implements the zero-lag case L_{i,j} = 0.
         """
-        if not isinstance(predecessor, int) or not isinstance(successor, int):
+        if not isinstance(predecessor, Integral) or not isinstance(successor, Integral):
             raise TypeError("dependencies must use integer work package IDs.")
+        predecessor = int(predecessor)  # Normalize NumPy integer scalar labels.
+        successor = int(successor)  # Normalize NumPy integer scalar labels.
         if predecessor <= 0 or successor <= 0:
             raise ValueError("dependencies must use positive work package IDs.")
         self.graph.add_edge(predecessor, successor)  # Encode predecessor in Pred(successor).
@@ -100,9 +111,10 @@ class Project:
     def calculate_default_sample_count(self) -> int:
         """Choose a common Monte Carlo sample size for every D_i.
 
-        Each work package stores one uint32 vector of duration samples. The
-        automatic sample count is therefore the memory budget divided equally
-        across the work packages.
+        The full project-time simulation stores more than D_i. It also stores
+        S_i, T_i, output starts/finishes matrices, and p_i. The automatic
+        sample count therefore uses a conservative per-activity simulation
+        estimate rather than only the duration-vector storage.
         """
         if self.sample_count is not None:
             return self.sample_count  # Use the user-specified Monte Carlo dimension n.
@@ -118,7 +130,7 @@ class Project:
             memory_budget = min(memory_budget, self.max_memory_bytes)  # Apply optional stricter cap.
 
         sample_count = memory_budget // (
-            BYTES_PER_UINT32 * len(self.work_packages)  # Four bytes for each activity sample D_i.
+            BYTES_PER_SIM_ACTIVITY_SAMPLE * len(self.work_packages)  # Approx bytes per activity sample.
         )
         if sample_count <= 0:
             raise ValueError("memory budget is too small for one sample per work package.")
@@ -165,10 +177,12 @@ class Project:
 
         This is a deliberately narrow prototyping alternative. It only applies
         when every duration model is ShiftedPoissonDuration and the activity
-        durations are interpreted as independent.
+        durations are interpreted as independent. It is exact, but the product
+        over shared path-incidence groups can grow exponentially.
         """
-        if not isinstance(t, int):  # The report works in discrete time.
+        if not isinstance(t, Integral):  # The report works in discrete time.
             raise TypeError("t must be an integer threshold.")
+        t = int(t)  # Normalize NumPy integer scalar thresholds.
         if t < 0:
             return 0.0  # Nonnegative durations imply P(T_project <= t)=0 for t<0.
 
@@ -199,9 +213,11 @@ class Project:
             )
             for theta in range(path_count)
         ]
+        deterministic_project_minimum = max(path_minimums)  # min possible max_theta D(p_theta).
+        if t < deterministic_project_minimum:
+            return 0.0  # T_project cannot be below the largest deterministic path minimum.
+
         remaining_slacks = [t - path_minimum for path_minimum in path_minimums]  # b_theta(t)=t-A_theta.
-        if any(slack < 0 for slack in remaining_slacks):
-            return 0.0  # At least one path exceeds t even at its deterministic minimum.
 
         shared_groups = [  # G = {S: |S| >= 2 and Lambda_S > 0}.
             incidence
@@ -218,11 +234,11 @@ class Project:
             for theta in range(path_count)
         ]
 
-        probability = 0.0  # Accumulator P in the algorithm.
+        probability = PROBABILITY_DTYPE(0)  # Accumulator P in the algorithm.
         summation_ranges = [range(upper_bound + 1) for upper_bound in upper_bounds]  # Product domain for z_S.
         for shared_values in product(*summation_ranges):  # Enumerate (z_S)_{S in G}.
             shared_by_group = dict(zip(shared_groups, shared_values, strict=True))  # Attach each z_S to S.
-            term_probability = 1.0  # P_z before adding it into P.
+            term_probability = PROBABILITY_DTYPE(1)  # P_z before adding it into P.
 
             for incidence, z_value in shared_by_group.items():
                 term_probability *= _poisson_pmf(group_lambdas[incidence], z_value)  # P(Z_S=z_S).
@@ -234,6 +250,9 @@ class Project:
                     if theta in incidence
                 )
                 residual_slack = remaining_slacks[theta] - shared_sum  # r_theta in the algorithm.
+                if residual_slack < 0:
+                    term_probability = PROBABILITY_DTYPE(0)  # This z choice makes path theta exceed t.
+                    break
                 term_probability *= _poisson_cdf(
                     singleton_lambdas[theta],
                     residual_slack,
@@ -241,10 +260,13 @@ class Project:
 
             probability += term_probability  # P <- P + P_z.
 
-        return min(max(probability, 0.0), 1.0)  # Clamp tiny floating-point roundoff outside [0,1].
+        return min(max(probability, PROBABILITY_DTYPE(0)), PROBABILITY_DTYPE(1))  # Clamp roundoff outside [0,1].
 
     def simulate_work_package(self, work_package_id: int) -> NDArray[np.uint32]:
         """Simulate and store the duration vector D_i for one activity."""
+        if not isinstance(work_package_id, Integral):
+            raise TypeError("work_package_id must be an integer.")
+        work_package_id = int(work_package_id)  # Normalize NumPy integer scalar labels.
         try:
             work_package = self.work_packages[work_package_id]  # Select the activity i.
         except KeyError as exc:
@@ -334,13 +356,15 @@ class Project:
                 raise OverflowError("project finish times exceed uint32 capacity.")
             finishes_by_node[node] = row_finishes.astype(np.uint32, copy=False)  # T_i = S_i + D_i.
 
-        # The project completion time is max_i T_i. We stack all T_i vectors
-        # only here, because this is the single global argmax in the algorithm.
-        finishes = np.stack([finishes_by_node[node] for node in order], axis=0)  # Matrix of all T_i.
-        completion_row_indices = np.argmax(finishes, axis=0)  # r = argmax_i T_i per sample.
-        completion_nodes = np.asarray(order, dtype=np.uint64)[completion_row_indices]  # Activity r.
+        # The project completion time is the maximum terminal finish time. We
+        # restrict the final argmax to sink activities so zero-duration ties do
+        # not stop the reconstructed critical path at an internal activity.
+        sink_nodes = [node for node in order if self.graph.out_degree(node) == 0]  # Terminal activities.
+        sink_finishes = np.stack([finishes_by_node[node] for node in sink_nodes], axis=0)  # Terminal T_i.
+        completion_row_indices = np.argmax(sink_finishes, axis=0)  # r = argmax over sinks per sample.
+        completion_nodes = np.asarray(sink_nodes, dtype=np.uint64)[completion_row_indices]  # Terminal r.
         completion_times = np.take_along_axis(  # T_project = T_r.
-            finishes,  # Candidate finish times T_i.
+            sink_finishes,  # Candidate terminal finish times T_i.
             completion_row_indices[np.newaxis, :],  # Winning activity row r per sample.
             axis=0,  # Select over activities.
         )[0].astype(np.uint32, copy=False)  # Store the project duration vector.
@@ -352,6 +376,7 @@ class Project:
         # The public result is returned as matrices ordered by the topological
         # order, which makes rows easy to interpret next to that list.
         starts = np.stack([starts_by_node[node] for node in order], axis=0)  # Matrix of all S_i.
+        finishes = np.stack([finishes_by_node[node] for node in order], axis=0)  # Matrix of all T_i.
 
         self.time_simulation_result = ProjectTimeSimulationResult(  # Package the sampled variables.
             starts=starts,  # S_i samples.
@@ -436,33 +461,49 @@ def _build_critical_paths(
     return critical_paths
 
 
-def _poisson_pmf(lambda_: float, k: int) -> float:
-    """Return P(Poi(lambda_) = k) for the prototype exact CDF calculation."""
+def _poisson_pmf(lambda_: float, k: int) -> np.longdouble:
+    """Return P(Poi(lambda_) = k) using NumPy long-double arithmetic."""
     if k < 0:
-        return 0.0  # A Poisson random variable has support N_0.
+        return PROBABILITY_DTYPE(0)  # A Poisson random variable has support N_0.
     if lambda_ == 0:
-        return 1.0 if k == 0 else 0.0  # Poi(0) is degenerate at zero.
-    return exp(-lambda_ + k * log(lambda_) - lgamma(k + 1))  # Stable log-PMF formula.
+        return PROBABILITY_DTYPE(1) if k == 0 else PROBABILITY_DTYPE(0)  # Poi(0) is degenerate at zero.
+    return _poisson_probability_vector(lambda_, k)[k]  # Select P(X=k) from the support vector 0, ..., k.
 
 
-def _poisson_cdf(lambda_: float, x: int | float) -> float:
-    """Return P(Poi(lambda_) <= x), with value 0 for x < 0."""
-    upper = floor(x)  # Discrete CDF uses the largest integer <= x.
+def _poisson_cdf(lambda_: float, x: int | float) -> np.longdouble:
+    """Return P(Poi(lambda_) <= x), with value 0 for impossible x < 0."""
+    upper = int(np.floor(x))  # Discrete CDF uses the largest integer <= x.
     if upper < 0:
-        return 0.0  # Convention from the theorem.
+        return PROBABILITY_DTYPE(0)  # Negative slack is outside the support N_0.
     if lambda_ == 0:
-        return 1.0  # Poi(0) <= x for every x >= 0.
+        return PROBABILITY_DTYPE(1)  # Poi(0) <= x for every x >= 0.
 
-    log_terms = [  # Log probabilities for k=0, ..., upper.
-        -lambda_ + k * log(lambda_) - lgamma(k + 1)
-        for k in range(upper + 1)
-    ]
-    max_log_term = max(log_terms)  # Centering term for log-sum-exp.
-    probability = exp(max_log_term) * sum(  # Sum probabilities without avoidable underflow.
-        exp(log_term - max_log_term)
-        for log_term in log_terms
+    probability = np.sum(  # F_X(upper)=sum_{k=0}^{upper} P(X=k).
+        _poisson_probability_vector(lambda_, upper),
+        dtype=PROBABILITY_DTYPE,
     )
-    return min(max(probability, 0.0), 1.0)  # Clamp floating-point roundoff.
+    return min(max(probability, PROBABILITY_DTYPE(0)), PROBABILITY_DTYPE(1))  # Clamp floating-point roundoff.
+
+
+def _poisson_probability_vector(lambda_: float, upper: int) -> NDArray[np.longdouble]:
+    """Return P(Poi(lambda_)=k) for k=0, ..., upper.
+
+    The recurrence p_k = p_{k-1} lambda / k makes the integer support explicit:
+    no probability is allocated below k=0, and the caller decides the largest
+    feasible k from the shifted-Poisson slack calculation.
+    """
+    if upper < 0:
+        return np.asarray([], dtype=PROBABILITY_DTYPE)  # Empty support below zero.
+
+    lambda_value = PROBABILITY_DTYPE(lambda_)  # Work in NumPy's widest floating type.
+    probabilities = np.empty(upper + 1, dtype=PROBABILITY_DTYPE)  # Stores p_0, ..., p_upper.
+    probabilities[0] = np.exp(-lambda_value, dtype=PROBABILITY_DTYPE)  # p_0 = exp(-lambda).
+    if upper == 0:
+        return probabilities  # Only k=0 is requested.
+
+    for k in range(1, upper + 1):
+        probabilities[k] = probabilities[k - 1] * lambda_value / PROBABILITY_DTYPE(k)  # p_k recurrence.
+    return probabilities
 
 
 def _system_memory_bytes() -> int:
