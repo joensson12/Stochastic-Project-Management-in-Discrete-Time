@@ -41,6 +41,21 @@ class ProbabilityDistribution(Protocol):
         """Generate Monte Carlo samples as probabilities in [0, 1]."""
 
 
+class ContinuousDistribution(Protocol):
+    """Interface for a nonnegative continuous cost or severity variable."""
+
+    def sample(
+        self,
+        sample_count: int,
+        rng: np.random.Generator,
+    ) -> NDArray[np.float64]:
+        """Generate Monte Carlo samples as continuous nonnegative values."""
+
+    @property
+    def expected_value(self) -> float:
+        """Return the distribution mean when it is available analytically."""
+
+
 @dataclass(frozen=True)
 class DeterministicProbability:
     """Deterministic occurrence-probability model P_i^j = p."""
@@ -59,6 +74,165 @@ class DeterministicProbability:
         if sample_count <= 0:
             raise ValueError("sample_count must be positive.")
         return np.full(sample_count, self.probability, dtype=np.float64)  # P_i^j is fixed in every scenario.
+
+    @property
+    def expected_value(self) -> float:
+        """Return E[P_i^j] for this deterministic probability model."""
+        return self.probability
+
+
+@dataclass(frozen=True)
+class DeterministicContinuousDistribution:
+    """Degenerate continuous model X = value."""
+
+    value: float  # Fixed nonnegative continuous value.
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "value", float(self.value))
+        if self.value < 0:
+            raise ValueError("value must be nonnegative.")
+
+    def sample(
+        self,
+        sample_count: int,
+        rng: np.random.Generator,
+    ) -> NDArray[np.float64]:
+        if sample_count <= 0:
+            raise ValueError("sample_count must be positive.")
+        return np.full(sample_count, self.value, dtype=np.float64)  # Degenerate continuous sample vector.
+
+    @property
+    def expected_value(self) -> float:
+        """Return E[X] for the degenerate distribution X = value."""
+        return self.value
+
+
+@dataclass(frozen=True)
+class DiscreteUniformDuration:
+    """Discrete uniform duration model on {minimum, ..., maximum}."""
+
+    minimum: int  # Smallest possible duration.
+    maximum: int  # Largest possible duration.
+
+    def __post_init__(self) -> None:
+        for name in ("minimum", "maximum"):
+            value = getattr(self, name)
+            if not isinstance(value, Integral):
+                raise TypeError(f"{name} must be an integer.")
+            object.__setattr__(self, name, int(value))
+
+        if self.minimum < 0:
+            raise ValueError("minimum must be nonnegative.")
+        if self.maximum < self.minimum:
+            raise ValueError("maximum must be at least minimum.")
+        if self.maximum > UINT32_MAX:
+            raise ValueError("maximum must fit in uint32.")
+
+    def sample(
+        self,
+        sample_count: int,
+        rng: np.random.Generator,
+    ) -> NDArray[np.uint32]:
+        if sample_count <= 0:
+            raise ValueError("sample_count must be positive.")
+        samples = rng.integers(self.minimum, self.maximum + 1, size=sample_count)  # Inclusive upper support.
+        return samples.astype(np.uint32, copy=False)
+
+    @property
+    def expected_value(self) -> float:
+        """Return E[D_i] for a discrete uniform integer duration."""
+        return (self.minimum + self.maximum) / 2
+
+    @property
+    def modes(self) -> tuple[int, ...]:
+        """Return every value in the support because all have equal mass."""
+        return tuple(range(self.minimum, self.maximum + 1))
+
+
+@dataclass(frozen=True)
+class UniformContinuousDistribution:
+    """Continuous uniform model on [minimum, maximum]."""
+
+    minimum: float  # Lower bound.
+    maximum: float  # Upper bound.
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "minimum", float(self.minimum))
+        object.__setattr__(self, "maximum", float(self.maximum))
+        if self.minimum < 0:
+            raise ValueError("minimum must be nonnegative.")
+        if self.maximum < self.minimum:
+            raise ValueError("maximum must be at least minimum.")
+
+    def sample(
+        self,
+        sample_count: int,
+        rng: np.random.Generator,
+    ) -> NDArray[np.float64]:
+        if sample_count <= 0:
+            raise ValueError("sample_count must be positive.")
+        return rng.uniform(self.minimum, self.maximum, size=sample_count).astype(np.float64, copy=False)
+
+    @property
+    def expected_value(self) -> float:
+        """Return E[X] for X ~ Uniform(minimum, maximum)."""
+        return (self.minimum + self.maximum) / 2
+
+
+@dataclass(frozen=True)
+class PERTDistribution:
+    """Beta-PERT continuous model on [minimum, maximum]."""
+
+    minimum: float  # Optimistic value.
+    most_likely: float  # Modal value.
+    maximum: float  # Pessimistic value.
+    shape: float = 4.0  # Standard PERT weight on the most likely value.
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "minimum", float(self.minimum))
+        object.__setattr__(self, "most_likely", float(self.most_likely))
+        object.__setattr__(self, "maximum", float(self.maximum))
+        object.__setattr__(self, "shape", float(self.shape))
+        if self.minimum < 0:
+            raise ValueError("minimum must be nonnegative.")
+        if self.maximum < self.minimum:
+            raise ValueError("maximum must be at least minimum.")
+        if not self.minimum <= self.most_likely <= self.maximum:
+            raise ValueError("most_likely must be between minimum and maximum.")
+        if self.shape <= 0:
+            raise ValueError("shape must be positive.")
+
+    def sample(
+        self,
+        sample_count: int,
+        rng: np.random.Generator,
+    ) -> NDArray[np.float64]:
+        if sample_count <= 0:
+            raise ValueError("sample_count must be positive.")
+        if self.minimum == self.maximum:
+            return np.full(sample_count, self.minimum, dtype=np.float64)  # Degenerate PERT law.
+
+        beta_samples = rng.beta(self.alpha, self.beta, size=sample_count)  # Sample on [0, 1].
+        return self.minimum + beta_samples * (self.maximum - self.minimum)  # Rescale to the PERT support.
+
+    @property
+    def alpha(self) -> float:
+        """Return the beta alpha parameter induced by the PERT inputs."""
+        if self.minimum == self.maximum:
+            return 1.0
+        return 1 + self.shape * (self.most_likely - self.minimum) / (self.maximum - self.minimum)
+
+    @property
+    def beta(self) -> float:
+        """Return the beta beta parameter induced by the PERT inputs."""
+        if self.minimum == self.maximum:
+            return 1.0
+        return 1 + self.shape * (self.maximum - self.most_likely) / (self.maximum - self.minimum)
+
+    @property
+    def expected_value(self) -> float:
+        """Return the PERT mean (minimum + shape*mode + maximum)/(shape + 2)."""
+        return (self.minimum + self.shape * self.most_likely + self.maximum) / (self.shape + 2)
 
 
 @dataclass(frozen=True)

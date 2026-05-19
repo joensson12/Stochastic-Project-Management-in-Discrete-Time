@@ -4,10 +4,12 @@ import numpy as np
 import pytest
 
 from spm import (
+    CostRisk,
     DeterministicProbability,
     Project,
     ScheduleRisk,
     ShiftedPoissonDuration,
+    UniformContinuousDistribution,
     WorkPackage,
 )
 from spm.project import BYTES_PER_SIM_ACTIVITY_SAMPLE
@@ -178,6 +180,57 @@ def test_dependency_lag_delays_successor_without_changing_duration() -> None:
         result.lag_samples_by_edge[(1, 2)],
         np.asarray([3, 3, 3], dtype=np.uint32),
     )
+
+
+def test_work_package_cost_uses_duration_daily_cost_fixed_costs_and_cost_risks() -> None:
+    project = Project(sample_count=2, rng_seed=123)
+    project.add_work_package(1, FixedDuration([2, 4]))
+    project.set_work_package_cost_model(
+        1,
+        daily_cost_model=UniformContinuousDistribution(10.0, 10.0),
+        fixed_costs=[5.0, 7.0],
+    )
+    project.add_cost_risk(
+        1,
+        CostRisk(
+            probability_model=DeterministicProbability(1.0),
+            severity_model=UniformContinuousDistribution(3.0, 3.0),
+        ),
+    )
+
+    samples = project.simulate_work_package_cost(1)
+    work_package = project.work_packages[1]
+
+    np.testing.assert_array_equal(samples, np.asarray([35.0, 55.0], dtype=np.float64))
+    np.testing.assert_array_equal(
+        work_package.baseline_cost_samples,
+        np.asarray([32.0, 52.0], dtype=np.float64),
+    )
+    np.testing.assert_array_equal(
+        work_package.cost_risk_total_samples,
+        np.asarray([3.0, 3.0], dtype=np.float64),
+    )
+    assert work_package.expected_baseline_cost == pytest.approx(42.0)
+    assert work_package.expected_cost_risk_total == pytest.approx(3.0)
+    assert work_package.get_expected_total_cost() == pytest.approx(45.0)
+    assert project.expected_project_cost() == pytest.approx(45.0)
+
+
+def test_cost_expected_value_uses_stored_duration_expectation_and_random_fixed_cost() -> None:
+    project = Project(sample_count=5, rng_seed=123)
+    project.add_work_package(1, ShiftedPoissonDuration(lambda_=1.0, a=2))
+    project.set_work_package_cost_model(
+        1,
+        daily_cost_model=UniformContinuousDistribution(10.0, 10.0),
+        fixed_costs=[UniformContinuousDistribution(5.0, 7.0)],
+    )
+
+    project.simulate_work_package_cost(1)
+    work_package = project.work_packages[1]
+
+    assert work_package.expected_duration == pytest.approx(3.0)
+    assert work_package.expected_baseline_cost == pytest.approx(36.0)
+    assert work_package.fixed_cost_samples[0].shape == (5,)
 
 
 def test_complete_paths_returns_source_to_sink_paths() -> None:

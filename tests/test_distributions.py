@@ -1,7 +1,13 @@
 import numpy as np
 import pytest
 
-from spm import ShiftedBinomialDuration, ShiftedPoissonDuration
+from spm import (
+    DiscreteUniformDuration,
+    PERTDistribution,
+    ShiftedBinomialDuration,
+    ShiftedPoissonDuration,
+    UniformContinuousDistribution,
+)
 
 
 def test_shifted_poisson_samples_are_uint32_and_shifted() -> None:
@@ -76,3 +82,34 @@ def test_shifted_binomial_rejects_invalid_parameters() -> None:
 
     with pytest.raises(ValueError, match="most_likely"):
         ShiftedBinomialDuration(minimum=2, maximum=8, most_likely=9)
+
+
+def test_uniform_continuous_distribution_samples_range_and_mean() -> None:
+    model = UniformContinuousDistribution(minimum=2.0, maximum=6.0)
+    samples = model.sample(100, np.random.default_rng(123))
+
+    assert samples.dtype == np.float64
+    assert np.all(samples >= 2.0)
+    assert np.all(samples <= 6.0)
+    assert model.expected_value == 4.0
+
+
+def test_discrete_uniform_duration_samples_range_dtype_mean_and_modes() -> None:
+    model = DiscreteUniformDuration(minimum=2, maximum=5)
+    samples = model.sample(100, np.random.default_rng(123))
+
+    assert samples.dtype == np.uint32
+    assert np.all(samples >= 2)
+    assert np.all(samples <= 5)
+    assert model.expected_value == 3.5
+    assert model.modes == (2, 3, 4, 5)
+
+
+def test_pert_distribution_samples_range_and_mean() -> None:
+    model = PERTDistribution(minimum=1.0, most_likely=4.0, maximum=7.0)
+    samples = model.sample(100, np.random.default_rng(123))
+
+    assert samples.dtype == np.float64
+    assert np.all(samples >= 1.0)
+    assert np.all(samples <= 7.0)
+    assert model.expected_value == pytest.approx(4.0)

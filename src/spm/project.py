@@ -11,8 +11,8 @@ import networkx as nx
 import numpy as np
 from numpy.typing import NDArray
 
-from spm.distributions import DurationDistribution, ShiftedPoissonDuration, UINT32_MAX
-from spm.work_package import ScheduleRisk, WorkPackage
+from spm.distributions import ContinuousDistribution, DurationDistribution, ShiftedPoissonDuration, UINT32_MAX
+from spm.work_package import CostRisk, ScheduleRisk, WorkPackage
 
 
 BYTES_PER_UINT32 = np.dtype(np.uint32).itemsize  # One D_i sample is stored as one uint32.
@@ -146,6 +146,34 @@ class Project:
         except KeyError as exc:
             raise KeyError(f"unknown work package {work_package_id}.") from exc
         work_package.add_schedule_risk(schedule_risk)  # Assign risk j to work package i.
+
+    def set_work_package_cost_model(
+        self,
+        work_package_id: int,
+        daily_cost_model: ContinuousDistribution,
+        fixed_costs: list[ContinuousDistribution | float] | None = None,
+    ) -> None:
+        """Set the daily cost model K_i and fixed costs H_i^j for activity i."""
+        work_package = self._work_package_by_id(work_package_id)  # Select the activity i.
+        work_package.set_cost_model(daily_cost_model, fixed_costs)  # Store K_i and H_i^j.
+
+    def add_fixed_cost(
+        self,
+        work_package_id: int,
+        fixed_cost: ContinuousDistribution | float,
+    ) -> None:
+        """Attach one fixed-cost model H_i^j to activity i."""
+        work_package = self._work_package_by_id(work_package_id)  # Select the activity i.
+        work_package.add_fixed_cost(fixed_cost)  # Store H_i^j.
+
+    def add_cost_risk(
+        self,
+        work_package_id: int,
+        cost_risk: CostRisk,
+    ) -> None:
+        """Attach one cost-risk model R_i^{c,j} to activity i."""
+        work_package = self._work_package_by_id(work_package_id)  # Select the activity i.
+        work_package.add_cost_risk(cost_risk)  # Assign cost risk j to work package i.
 
     def add_dependency(
         self,
@@ -367,6 +395,53 @@ class Project:
         for work_package in self.work_packages.values():
             work_package.simulate_schedule_risks(sample_count, self.rng)  # Store sum_j R_i^{t,j}.
 
+    def simulate_work_package_baseline_cost(self, work_package_id: int) -> NDArray[np.float64]:
+        """Simulate and store baseline cost A_i for one activity."""
+        sample_count = self.calculate_default_sample_count()  # Common sample dimension n.
+        work_package = self._work_package_by_id(work_package_id)  # Select the activity i.
+        self._ensure_work_package_duration_samples(work_package, sample_count)  # Ensure D_i exists before A_i.
+        return work_package.simulate_baseline_cost(sample_count, self.rng)  # Draw K_i and assemble A_i.
+
+    def simulate_all_baseline_costs(self) -> None:
+        """Simulate and store baseline cost vectors A_i for all activities."""
+        sample_count = self.calculate_default_sample_count()  # Common sample dimension n.
+        self._ensure_duration_samples(sample_count)  # Ensure every D_i exists before K_i o D_i.
+        for work_package in self.work_packages.values():
+            work_package.simulate_baseline_cost(sample_count, self.rng)  # Store A_i.
+
+    def simulate_work_package_cost_risks(self, work_package_id: int) -> NDArray[np.float64]:
+        """Simulate and store the summed cost-risk vector for one activity."""
+        sample_count = self.calculate_default_sample_count()  # Common sample dimension n.
+        work_package = self._work_package_by_id(work_package_id)  # Select the activity i.
+        return work_package.simulate_cost_risks(sample_count, self.rng)  # Draw and sum R_i^{c,j}.
+
+    def simulate_all_cost_risks(self) -> None:
+        """Simulate and store summed cost-risk vectors for all activities."""
+        sample_count = self.calculate_default_sample_count()  # Common sample dimension n.
+        for work_package in self.work_packages.values():
+            work_package.simulate_cost_risks(sample_count, self.rng)  # Store sum_j R_i^{c,j}.
+
+    def simulate_work_package_cost(self, work_package_id: int) -> NDArray[np.float64]:
+        """Simulate and store total cost C_i for one activity."""
+        sample_count = self.calculate_default_sample_count()  # Common sample dimension n.
+        work_package = self._work_package_by_id(work_package_id)  # Select the activity i.
+        self._ensure_work_package_duration_samples(work_package, sample_count)  # Ensure D_i exists before cost.
+        return work_package.simulate_cost(sample_count, self.rng)  # Store C_i = A_i + sum_j R_i^{c,j}.
+
+    def simulate_all_costs(self) -> None:
+        """Simulate and store total cost vectors C_i for all activities."""
+        sample_count = self.calculate_default_sample_count()  # Common sample dimension n.
+        self._ensure_duration_samples(sample_count)  # Ensure every D_i exists before cost simulation.
+        for work_package in self.work_packages.values():
+            work_package.simulate_cost(sample_count, self.rng)  # Store C_i and E[C_i].
+
+    def expected_project_cost(self) -> float:
+        """Return sum_i E[C_i] after all work-package costs have been simulated."""
+        total = 0.0  # Accumulator for the project-level expected cost.
+        for work_package in self.work_packages.values():
+            total += work_package.get_expected_total_cost()  # Linearity gives E[sum_i C_i] = sum_i E[C_i].
+        return total
+
     def simulate_project_time(self) -> ProjectTimeSimulationResult:
         """Apply the longest-path recursion to all Monte Carlo samples.
 
@@ -573,9 +648,27 @@ class Project:
 
     def _ensure_duration_samples(self, sample_count: int) -> None:
         for work_package in self.work_packages.values():
-            samples = work_package.duration_samples  # Existing sample vector D_i, if any.
-            if samples is None or len(samples) != sample_count:
-                work_package.simulate_duration(sample_count, self.rng)  # Draw D_i when missing/stale.
+            self._ensure_work_package_duration_samples(work_package, sample_count)  # Draw D_i when missing/stale.
+
+    def _ensure_work_package_duration_samples(
+        self,
+        work_package: WorkPackage,
+        sample_count: int,
+    ) -> None:
+        """Ensure one activity has a duration vector D_i with the common sample size."""
+        samples = work_package.duration_samples  # Existing sample vector D_i, if any.
+        if samples is None or len(samples) != sample_count:
+            work_package.simulate_duration(sample_count, self.rng)  # Draw D_i when missing/stale.
+
+    def _work_package_by_id(self, work_package_id: int) -> WorkPackage:
+        """Return a validated work package by activity ID."""
+        if not isinstance(work_package_id, Integral):
+            raise TypeError("work_package_id must be an integer.")
+        work_package_id = int(work_package_id)  # Normalize NumPy integer scalar labels.
+        try:
+            return self.work_packages[work_package_id]  # Select the activity i.
+        except KeyError as exc:
+            raise KeyError(f"unknown work package {work_package_id}.") from exc
 
     def _simulate_dependency_lags(
         self,
