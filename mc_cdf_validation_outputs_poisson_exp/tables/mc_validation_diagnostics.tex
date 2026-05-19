@@ -1,0 +1,29 @@
+\begin{table}
+\caption{Monte Carlo validation diagnostics against the exact shifted-Poisson distribution.}
+\label{tab:mc_validation_diagnostics}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Monte Carlo samples $n$ & 10,000,000 \\
+Monte Carlo seed & 2026 \\
+Monte Carlo runtime, seconds & 48.6692 \\
+Exact CDF runtime, seconds & 46720.2 \\
+Runtime ratio, exact / MC & 959.953 \\
+Exact CDF grid & $t=0,\ldots,40$ \\
+KS distance $\sup_t |\widehat F_n(t)-F(t)|$ & 0.000212389 \\
+Integer threshold attaining max CDF error & $t=25$ \\
+CDF MAE on integer grid & 3.94731e-05 \\
+CDF RMSE on integer grid & 6.85587e-05 \\
+95\% DKW half-width & 0.000429469 \\
+KS distance / DKW half-width & 0.494538 \\
+PMF MAE on integer grid & 1.91493e-05 \\
+PMF RMSE on integer grid & 3.96243e-05 \\
+PMF total variation on grid & 0.000392562 \\
+Exact tail mass $\mathbb{P}(T_{\mathrm{project}}>40)$ & 0.000471107 \\
+MC tail mass $\mathbb{P}(T_{\mathrm{project}}>40)$ & 0.0004626 \\
+Exact PMF mass on grid & 0.999529 \\
+Max error between cumulative exact PMF and exact CDF & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}

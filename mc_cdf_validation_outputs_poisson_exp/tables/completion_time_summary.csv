@@ -1,0 +1,9 @@
+Quantity,Value
+MC mean $\widehat{\mathbb{E}}[T_{\mathrm{project}}]$,25.784
+MC variance,15.7192
+MC standard deviation,3.96474
+MC median,$26$
+MC 75\% quantile,$28$
+MC 90\% quantile,$31$
+MC 95\% quantile,$33$
+MC 99\% quantile,$36$
