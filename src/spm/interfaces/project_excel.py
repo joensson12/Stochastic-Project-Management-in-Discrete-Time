@@ -14,6 +14,7 @@ import networkx as nx
 from spm.distributions import (
     DeterministicContinuousDistribution,
     DiscreteUniformDuration,
+    PERTDistribution,
     ShiftedBinomialDuration,
     UniformContinuousDistribution,
 )
@@ -83,8 +84,8 @@ def load_project_from_excel(
         project.add_work_package(node_id, duration_model)  # Register activity i and D_i law.
         project.set_work_package_cost_model(
             node_id,
-            DeterministicContinuousDistribution(_number(row, "Variable_Cost_per_Day_x1000", default=0.0)),
-            fixed_costs=[_number(row, "Fixed_Cost_x1000", default=0.0)],
+            _daily_cost_model_from_activity(row),
+            fixed_costs=[_fixed_cost_model_from_activity(row)],
         )  # Attach K_i and H_i^j from the cleaned activity row.
 
         predecessor_ids = _parse_predecessors(row.get("Predecessors"))  # Parse Pred(i).
@@ -97,9 +98,10 @@ def load_project_from_excel(
         )
 
     for activity in activities.values():
+        lag = _integer(activity.raw, "Lag", default=0)  # Deterministic incoming lag for this activity row.
         for predecessor in activity.predecessor_ids:
             if predecessor in activities:
-                project.add_dependency(predecessor, activity.node_id)  # Encode predecessor -> successor.
+                project.add_dependency(predecessor, activity.node_id, lag=lag)  # Encode predecessor -> successor.
 
     risks: dict[str, ImportedExcelRisk] = {}  # Metadata keyed by risk ID.
     for row in risk_rows:
@@ -195,11 +197,30 @@ def _duration_model_from_activity(row: dict[str, object]):
     raise ValueError(f"unsupported duration distribution {row.get('Duration_Distribution')!r}.")
 
 
+def _fixed_cost_model_from_activity(row: dict[str, object]):
+    return _continuous_model_from_bounds(
+        distribution=row.get("Cost_Distribution"),
+        minimum=_number(row, "Cost_Min_x1000", default=0.0),
+        most_likely=_number(row, "Cost_Most_Likely_x1000", default=0.0),
+        maximum=_number(row, "Cost_Max_x1000", default=0.0),
+    )  # Fixed cost H_i^j may itself be uncertain.
+
+
+def _daily_cost_model_from_activity(row: dict[str, object]):
+    return _continuous_model_from_bounds(
+        distribution=row.get("Variable_Cost_Distribution"),
+        minimum=_number(row, "Variable_Cost_Min_x1000", default=0.0),
+        most_likely=_number(row, "Variable_Cost_per_x1000", default=0.0),
+        maximum=_number(row, "Variable_Cost_Max_Days_x1000", default=0.0),
+    )  # Daily variable cost K_i, in x1000 monetary units per day.
+
+
 def _probability_model_from_risk(row: dict[str, object]) -> UniformContinuousDistribution:
-    return UniformContinuousDistribution(
+    return _continuous_model_from_bounds(
+        distribution=row.get("Probability_Distribution"),
         minimum=_number(row, "Probability_Min"),
         maximum=_number(row, "Probability_Max"),
-    )  # The cleaned dataset currently stores probability uncertainty as a bounded uniform interval.
+    )  # The cleaned dataset currently stores probability uncertainty as a bounded interval.
 
 
 def _schedule_impact_model_from_risk(row: dict[str, object]) -> DiscreteUniformDuration:
@@ -210,10 +231,32 @@ def _schedule_impact_model_from_risk(row: dict[str, object]) -> DiscreteUniformD
 
 
 def _cost_impact_model_from_risk(row: dict[str, object]) -> UniformContinuousDistribution:
-    return UniformContinuousDistribution(
+    return _continuous_model_from_bounds(
+        distribution=row.get("Impact_Distribution"),
         minimum=_number(row, "Impact_Min"),
         maximum=_number(row, "Impact_Max"),
     )  # Cost risk impacts are continuous x1000 monetary units.
+
+
+def _continuous_model_from_bounds(
+    *,
+    distribution: object,
+    minimum: float,
+    maximum: float,
+    most_likely: float | None = None,
+):
+    label = _normalize_label(distribution)
+    if minimum == maximum:
+        return DeterministicContinuousDistribution(minimum)
+    if label in {"pert", "beta pert", "betapert"}:
+        return PERTDistribution(
+            minimum=minimum,
+            most_likely=minimum if most_likely is None else most_likely,
+            maximum=maximum,
+        )
+    if label in {"uniform", "uniforme", "continuous uniform"}:
+        return UniformContinuousDistribution(minimum=minimum, maximum=maximum)
+    raise ValueError(f"unsupported continuous distribution {distribution!r}.")
 
 
 def _read_xlsx_table(path: Path, sheet_name: str) -> list[dict[str, object]]:
