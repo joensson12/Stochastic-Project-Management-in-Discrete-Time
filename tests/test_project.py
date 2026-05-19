@@ -182,6 +182,34 @@ def test_dependency_lag_delays_successor_without_changing_duration() -> None:
     )
 
 
+def test_project_time_with_critical_activities_stores_times_and_returns_only_summary() -> None:
+    project = Project(sample_count=2, rng_seed=123)
+    project.add_work_package(1, FixedDuration([5, 5]))
+    project.add_work_package(2, FixedDuration([5, 5]))
+    project.add_work_package(3, FixedDuration([1, 1]))
+    project.add_dependency(1, 3)
+    project.add_dependency(2, 3)
+
+    result = project.simulate_project_time_with_critical_activities()
+
+    assert set(result) == {"completion_times", "critical_activities", "topological_order"}
+    np.testing.assert_array_equal(
+        result["completion_times"],
+        np.asarray([6, 6], dtype=np.uint32),
+    )
+    np.testing.assert_array_equal(
+        result["critical_activities"],
+        np.ones((3, 2), dtype=np.bool_),
+    )
+    np.testing.assert_array_equal(project.completion_time_samples, result["completion_times"])
+    np.testing.assert_array_equal(project.critical_activity_samples, result["critical_activities"])
+    assert project.critical_activity_topological_order == result["topological_order"]
+    np.testing.assert_array_equal(
+        project.work_packages[3].get_start_samples(),
+        np.asarray([5, 5], dtype=np.uint32),
+    )
+
+
 def test_work_package_cost_uses_duration_daily_cost_fixed_costs_and_cost_risks() -> None:
     project = Project(sample_count=2, rng_seed=123)
     project.add_work_package(1, FixedDuration([2, 4]))

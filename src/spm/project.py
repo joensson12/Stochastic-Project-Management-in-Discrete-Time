@@ -111,6 +111,9 @@ class Project:
         self.work_packages: dict[int, WorkPackage] = {}  # The set W, keyed by activity ID i.
         self.graph = nx.DiGraph()  # The deterministic schedule graph S.
         self.time_simulation_result: ProjectTimeSimulationResult | None = None  # Last project-time sample.
+        self.completion_time_samples: NDArray[np.uint32] | None = None  # Last sampled T_project vector.
+        self.critical_activity_samples: NDArray[np.bool_] | None = None  # Last all-critical-activity matrix C.
+        self.critical_activity_topological_order: list[int] | None = None  # Row labels for C.
 
     def add_work_package(
         self,
@@ -551,11 +554,12 @@ class Project:
             topological_order=order,  # Row labels for starts and finishes.
             lag_samples_by_edge=lag_samples_by_edge,  # L_{j,i} samples kept outside duration D_i.
         )
+        self.completion_time_samples = completion_times  # Store T_project directly on the project.
         return self.time_simulation_result
 
     def simulate_project_time_with_critical_activities(
         self,
-    ) -> dict[str, NDArray[np.uint32] | NDArray[np.bool_] | list[int] | dict[tuple[int, int], NDArray[np.uint32]]]:
+    ) -> dict[str, NDArray[np.uint32] | NDArray[np.bool_] | list[int]]:
         """Calculate project length and all activities on at least one critical path.
 
         This slower variant keeps the full tied-predecessor information. For
@@ -635,15 +639,15 @@ class Project:
                     node_offset,
                     :,
                     sample_mask,
-                ]  # C <- C OR B_i for tied project finish node i.
+                ].T  # C <- C OR B_i for tied project finish node i.
 
+        self.completion_time_samples = completion_times.astype(np.uint32, copy=False)  # Store T_project on Project.
+        self.critical_activity_samples = critical_activities  # Store C on Project for later notebook access.
+        self.critical_activity_topological_order = order  # Store row labels for C.
         return {
-            "starts": starts,  # S_i samples, rows follow topological_order.
-            "finishes": finishes,  # T_i samples, rows follow topological_order.
             "completion_times": completion_times.astype(np.uint32, copy=False),  # T_project samples.
             "critical_activities": critical_activities,  # Boolean C vectors for all scenarios.
             "topological_order": order,  # Row labels for starts, finishes, and critical_activities.
-            "lag_samples_by_edge": lag_samples_by_edge,  # L_{j,i} samples kept separate from D_i.
         }
 
     def _ensure_duration_samples(self, sample_count: int) -> None:
