@@ -3,7 +3,14 @@ from math import exp, lgamma, log
 import numpy as np
 import pytest
 
-from spm import Project, ShiftedPoissonDuration, WorkPackage
+from spm import (
+    DeterministicProbability,
+    Project,
+    ScheduleRisk,
+    ShiftedPoissonDuration,
+    WorkPackage,
+)
+from spm.project import BYTES_PER_SIM_ACTIVITY_SAMPLE
 
 
 class FixedDuration:
@@ -41,7 +48,9 @@ def test_default_sample_count_uses_memory_budget_per_work_package() -> None:
     project.add_work_package(1, ShiftedPoissonDuration(lambda_=1, a=0))
     project.add_work_package(2, ShiftedPoissonDuration(lambda_=1, a=0))
 
-    assert project.calculate_default_sample_count() == (10 * 1024**3) // (4 * 2)
+    assert project.calculate_default_sample_count() == (10 * 1024**3) // (
+        BYTES_PER_SIM_ACTIVITY_SAMPLE * 2
+    )
 
 
 def test_default_sample_count_uses_system_ram_minus_two_gib_when_smaller() -> None:
@@ -49,7 +58,9 @@ def test_default_sample_count_uses_system_ram_minus_two_gib_when_smaller() -> No
     project.add_work_package(1, ShiftedPoissonDuration(lambda_=1, a=0))
     project.add_work_package(2, ShiftedPoissonDuration(lambda_=1, a=0))
 
-    assert project.calculate_default_sample_count() == (4 * 1024**3) // (4 * 2)
+    assert project.calculate_default_sample_count() == (4 * 1024**3) // (
+        BYTES_PER_SIM_ACTIVITY_SAMPLE * 2
+    )
 
 
 def test_serial_network_completion_and_critical_path() -> None:
@@ -111,6 +122,62 @@ def test_parallel_network_uses_latest_predecessor_per_sample() -> None:
         np.asarray([11, 10, 6], dtype=np.uint32),
     )
     assert result.critical_paths == [[1, 3], [2, 3], [1, 3]]
+
+
+def test_work_package_schedule_risk_adds_discrete_duration_effect() -> None:
+    project = Project(sample_count=3, rng_seed=123)
+    project.add_work_package(1, FixedDuration([10, 10, 10]))
+    project.add_schedule_risk(
+        1,
+        ScheduleRisk(
+            probability_model=DeterministicProbability(1.0),
+            severity_model=FixedDuration([2, 0, 5]),
+        ),
+    )
+
+    samples = project.simulate_work_package(1)
+    work_package = project.work_packages[1]
+
+    np.testing.assert_array_equal(samples, np.asarray([12, 10, 15], dtype=np.uint32))
+    np.testing.assert_array_equal(
+        work_package.baseline_duration_samples,
+        np.asarray([10, 10, 10], dtype=np.uint32),
+    )
+    np.testing.assert_array_equal(
+        work_package.schedule_risk_total_samples,
+        np.asarray([2, 0, 5], dtype=np.uint32),
+    )
+    np.testing.assert_array_equal(
+        work_package.schedule_risk_results[0].occurrences,
+        np.asarray([True, True, True], dtype=np.bool_),
+    )
+
+
+def test_dependency_lag_delays_successor_without_changing_duration() -> None:
+    project = Project(sample_count=3, rng_seed=123)
+    project.add_work_package(1, FixedDuration([1, 2, 3]))
+    project.add_work_package(2, FixedDuration([4, 5, 6]))
+    project.add_dependency(1, 2, lag=3)
+
+    result = project.simulate_project_time()
+    row_for_2 = result.topological_order.index(2)
+
+    np.testing.assert_array_equal(
+        result.starts[row_for_2],
+        np.asarray([4, 5, 6], dtype=np.uint32),
+    )
+    np.testing.assert_array_equal(
+        result.finishes[row_for_2],
+        np.asarray([8, 10, 12], dtype=np.uint32),
+    )
+    np.testing.assert_array_equal(
+        project.work_packages[2].duration_samples,
+        np.asarray([4, 5, 6], dtype=np.uint32),
+    )
+    np.testing.assert_array_equal(
+        result.lag_samples_by_edge[(1, 2)],
+        np.asarray([3, 3, 3], dtype=np.uint32),
+    )
 
 
 def test_complete_paths_returns_source_to_sink_paths() -> None:

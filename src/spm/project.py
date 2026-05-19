@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import product
 from numbers import Integral
-from typing import Callable, Sequence
+from typing import Callable, Protocol, Sequence
 
 import networkx as nx
 import numpy as np
 from numpy.typing import NDArray
 
 from spm.distributions import DurationDistribution, ShiftedPoissonDuration, UINT32_MAX
-from spm.work_package import WorkPackage
+from spm.work_package import ScheduleRisk, WorkPackage
 
 
 BYTES_PER_UINT32 = np.dtype(np.uint32).itemsize  # One D_i sample is stored as one uint32.
@@ -44,6 +44,43 @@ class ProjectTimeSimulationResult:
     completion_times: NDArray[np.uint32]  # Sample vector of T_project = max_i T_i.
     critical_paths: list[list[int]]  # One reconstructed critical path C per sample.
     topological_order: list[int]  # The activity order T used in the recursion.
+    lag_samples_by_edge: dict[tuple[int, int], NDArray[np.uint32]] = field(default_factory=dict)  # Sampled L_{j,i}.
+
+
+class LagModel(Protocol):
+    """Interface for a dependency lag L_{j,i}."""
+
+    def sample(
+        self,
+        sample_count: int,
+        rng: np.random.Generator,
+    ) -> NDArray[np.uint32]:
+        """Generate Monte Carlo samples of L_{j,i} as nonnegative integers."""
+
+
+@dataclass(frozen=True)
+class DeterministicLag:
+    """Deterministic dependency lag model L_{j,i} = lag."""
+
+    lag: int  # Fixed nonnegative lag on edge j -> i.
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.lag, Integral):
+            raise TypeError("lag must be an integer.")
+        object.__setattr__(self, "lag", int(self.lag))  # Normalize NumPy integer scalars.
+        if self.lag < 0:
+            raise ValueError("lag must be nonnegative.")
+        if self.lag > UINT32_MAX:
+            raise ValueError("lag must fit in uint32.")
+
+    def sample(
+        self,
+        sample_count: int,
+        rng: np.random.Generator,
+    ) -> NDArray[np.uint32]:
+        if sample_count <= 0:
+            raise ValueError("sample_count must be positive.")
+        return np.full(sample_count, self.lag, dtype=np.uint32)  # Deterministic L_{j,i} for every scenario.
 
 
 class Project:
@@ -95,10 +132,32 @@ class Project:
         )
         self.graph.add_node(work_package_id)  # Add i as a node in the schedule graph S.
 
-    def add_dependency(self, predecessor: int, successor: int) -> None:
+    def add_schedule_risk(
+        self,
+        work_package_id: int,
+        schedule_risk: ScheduleRisk,
+    ) -> None:
+        """Attach one schedule-risk model R_i^{t,j} to activity i."""
+        if not isinstance(work_package_id, Integral):
+            raise TypeError("work_package_id must be an integer.")
+        work_package_id = int(work_package_id)  # Normalize NumPy integer scalar labels.
+        try:
+            work_package = self.work_packages[work_package_id]  # Select the activity i.
+        except KeyError as exc:
+            raise KeyError(f"unknown work package {work_package_id}.") from exc
+        work_package.add_schedule_risk(schedule_risk)  # Assign risk j to work package i.
+
+    def add_dependency(
+        self,
+        predecessor: int,
+        successor: int,
+        lag: int | LagModel = 0,
+    ) -> None:
         """Add predecessor -> successor, meaning predecessor in Pred(successor).
 
-        This first prototype implements the zero-lag case L_{i,j} = 0.
+        Lags are stored on dependency edges as L_{predecessor,successor}. The
+        current concrete implementation is deterministic, but sampled lag
+        models can later satisfy the same interface.
         """
         if not isinstance(predecessor, Integral) or not isinstance(successor, Integral):
             raise TypeError("dependencies must use integer work package IDs.")
@@ -106,7 +165,11 @@ class Project:
         successor = int(successor)  # Normalize NumPy integer scalar labels.
         if predecessor <= 0 or successor <= 0:
             raise ValueError("dependencies must use positive work package IDs.")
-        self.graph.add_edge(predecessor, successor)  # Encode predecessor in Pred(successor).
+        self.graph.add_edge(  # Encode predecessor in Pred(successor), with separate lag model.
+            predecessor,
+            successor,
+            lag_model=_coerce_lag_model(lag),  # Store L_{predecessor,successor} on the edge.
+        )
 
     def calculate_default_sample_count(self) -> int:
         """Choose a common Monte Carlo sample size for every D_i.
@@ -283,12 +346,33 @@ class Project:
         for work_package in self.work_packages.values():
             work_package.simulate_duration(sample_count, self.rng)  # Draw the vector D_i.
 
+    def simulate_work_package_schedule_risks(self, work_package_id: int) -> NDArray[np.uint32]:
+        """Simulate and store the summed schedule-risk vector for one activity."""
+        if not isinstance(work_package_id, Integral):
+            raise TypeError("work_package_id must be an integer.")
+        work_package_id = int(work_package_id)  # Normalize NumPy integer scalar labels.
+        try:
+            work_package = self.work_packages[work_package_id]  # Select the activity i.
+        except KeyError as exc:
+            raise KeyError(f"unknown work package {work_package_id}.") from exc
+
+        return work_package.simulate_schedule_risks(  # Draw and sum R_i^{t,1}, ..., R_i^{t,r_i^t}.
+            self.calculate_default_sample_count(),
+            self.rng,
+        )
+
+    def simulate_all_schedule_risks(self) -> None:
+        """Simulate and store summed schedule-risk vectors for all activities."""
+        sample_count = self.calculate_default_sample_count()  # Common sample dimension n.
+        for work_package in self.work_packages.values():
+            work_package.simulate_schedule_risks(sample_count, self.rng)  # Store sum_j R_i^{t,j}.
+
     def simulate_project_time(self) -> ProjectTimeSimulationResult:
         """Apply the longest-path recursion to all Monte Carlo samples.
 
         This mirrors the report algorithm:
         S_i = 0 and T_i = D_i when Pred(i) is empty.
-        Otherwise S_i = max_{j in Pred(i)} T_j and T_i = S_i + D_i.
+        Otherwise S_i = max_{j in Pred(i)} (T_j + L_{j,i}) and T_i = S_i + D_i.
 
         The max is vectorized over samples. For each activity, only the
         predecessor finish vectors needed for that local argmax are stacked
@@ -301,16 +385,16 @@ class Project:
 
         sample_count = self.calculate_default_sample_count()  # Number of Monte Carlo scenarios.
         self._ensure_duration_samples(sample_count)  # Ensure every D_i vector exists.
+        lag_samples_by_edge = self._simulate_dependency_lags(sample_count)  # Sample all L_{j,i} vectors.
 
         # These dictionaries are the sampled versions of the mathematical
         # vectors S_i, T_i, and p_i. Each value has one entry per Monte Carlo
         # realization.
-        starts_by_node: dict[int, NDArray[np.uint32]] = {}  # Stores sampled S_i vectors.
-        finishes_by_node: dict[int, NDArray[np.uint32]] = {}  # Stores sampled T_i vectors.
         predecessors_by_node: dict[int, NDArray[np.uint64]] = {}  # Stores sampled p_i vectors.
 
         for node in order:
-            duration_samples = self.work_packages[node].duration_samples  # The sampled D_i vector.
+            work_package = self.work_packages[node]  # Activity i, where S_i and T_i will be stored.
+            duration_samples = work_package.duration_samples  # The sampled D_i vector.
             if duration_samples is None:
                 raise RuntimeError(f"duration samples are missing for activity {node}.")
             predecessor_nodes = list(self.graph.predecessors(node))  # The set Pred(i).
@@ -322,23 +406,26 @@ class Project:
 
             if not predecessor_nodes:
                 # Pred(i) is empty, so activity i can start at project time 0.
-                starts_by_node[node] = np.zeros(sample_count, dtype=np.uint32)  # S_i = 0.
+                start_samples = np.zeros(sample_count, dtype=np.uint32)  # S_i = 0.
             else:
-                # Temporarily form the matrix (T_j)_{j in Pred(i)} only for the
+                # Temporarily form the matrix (T_j + L_{j,i})_{j in Pred(i)} only for the
                 # local argmax that defines S_i and p_i.
-                pred_finishes = np.stack(  # Matrix with rows T_j for j in Pred(i).
+                predecessor_finish_lags = np.stack(  # Matrix with rows T_j + L_{j,i}.
                     [
-                        finishes_by_node[predecessor]  # Previously computed T_j.
+                        self.work_packages[predecessor].get_finish_samples().astype(np.uint64)  # Previously computed T_j.
+                        + lag_samples_by_edge[(predecessor, node)].astype(np.uint64)  # Edge lag L_{j,i}.
                         for predecessor in predecessor_nodes
                     ],
                     axis=0,  # Rows index predecessors; columns index samples.
                 )
-                selected_pred_offsets = np.argmax(pred_finishes, axis=0)  # argmax_j T_j per sample.
-                starts_by_node[node] = np.take_along_axis(  # S_i = max_{j in Pred(i)} T_j.
-                    pred_finishes,  # Candidate predecessor finish times.
+                if np.any(predecessor_finish_lags > UINT32_MAX):
+                    raise OverflowError("start times exceed uint32 capacity.")
+                selected_pred_offsets = np.argmax(predecessor_finish_lags, axis=0)  # argmax_j (T_j + L_{j,i}).
+                start_samples = np.take_along_axis(  # S_i = max_{j in Pred(i)} (T_j + L_{j,i}).
+                    predecessor_finish_lags,  # Candidate predecessor finish-plus-lag times.
                     selected_pred_offsets[np.newaxis, :],  # Winning predecessor row per sample.
                     axis=0,  # Max was taken over predecessor rows.
-                )[0]  # Collapse the single selected row into a vector.
+                )[0].astype(np.uint32, copy=False)  # Collapse the single selected row into a vector.
                 predecessors_by_node[node] = np.asarray(  # p_i = selected predecessor m.
                     predecessor_nodes,  # Candidate predecessor activity IDs.
                     dtype=np.uint64,  # Store IDs as unsigned integers.
@@ -349,18 +436,21 @@ class Project:
             # Compute T_i = S_i + D_i in uint64 first. This catches overflow
             # before storing back into the compact uint32 representation.
             row_finishes = (
-                starts_by_node[node].astype(np.uint64)  # S_i, widened before addition.
+                start_samples.astype(np.uint64)  # S_i, widened before addition.
                 + duration_samples.astype(np.uint64)  # D_i, widened before addition.
             )
             if np.any(row_finishes > UINT32_MAX):
                 raise OverflowError("project finish times exceed uint32 capacity.")
-            finishes_by_node[node] = row_finishes.astype(np.uint32, copy=False)  # T_i = S_i + D_i.
+            work_package.set_timing_samples(  # Store sampled timing output on the activity itself.
+                start_samples,
+                row_finishes.astype(np.uint32, copy=False),  # T_i = S_i + D_i.
+            )
 
         # The project completion time is the maximum terminal finish time. We
         # restrict the final argmax to sink activities so zero-duration ties do
         # not stop the reconstructed critical path at an internal activity.
         sink_nodes = [node for node in order if self.graph.out_degree(node) == 0]  # Terminal activities.
-        sink_finishes = np.stack([finishes_by_node[node] for node in sink_nodes], axis=0)  # Terminal T_i.
+        sink_finishes = np.stack([self.work_packages[node].get_finish_samples() for node in sink_nodes], axis=0)  # Terminal T_i.
         completion_row_indices = np.argmax(sink_finishes, axis=0)  # r = argmax over sinks per sample.
         completion_nodes = np.asarray(sink_nodes, dtype=np.uint64)[completion_row_indices]  # Terminal r.
         completion_times = np.take_along_axis(  # T_project = T_r.
@@ -375,8 +465,8 @@ class Project:
 
         # The public result is returned as matrices ordered by the topological
         # order, which makes rows easy to interpret next to that list.
-        starts = np.stack([starts_by_node[node] for node in order], axis=0)  # Matrix of all S_i.
-        finishes = np.stack([finishes_by_node[node] for node in order], axis=0)  # Matrix of all T_i.
+        starts = np.stack([self.work_packages[node].get_start_samples() for node in order], axis=0)  # Matrix of all S_i.
+        finishes = np.stack([self.work_packages[node].get_finish_samples() for node in order], axis=0)  # Matrix of all T_i.
 
         self.time_simulation_result = ProjectTimeSimulationResult(  # Package the sampled variables.
             starts=starts,  # S_i samples.
@@ -384,14 +474,127 @@ class Project:
             completion_times=completion_times,  # T_project samples.
             critical_paths=critical_paths,  # Critical path samples C.
             topological_order=order,  # Row labels for starts and finishes.
+            lag_samples_by_edge=lag_samples_by_edge,  # L_{j,i} samples kept outside duration D_i.
         )
         return self.time_simulation_result
+
+    def simulate_project_time_with_critical_activities(
+        self,
+    ) -> dict[str, NDArray[np.uint32] | NDArray[np.bool_] | list[int] | dict[tuple[int, int], NDArray[np.uint32]]]:
+        """Calculate project length and all activities on at least one critical path.
+
+        This slower variant keeps the full tied-predecessor information. For
+        every Monte Carlo scenario, critical_activities[k, s] is true when the
+        kth activity in topological_order lies on at least one longest path.
+        """
+        order = self.topological_order()  # T, a topological order of the DAG.
+        if not order:
+            raise ValueError("cannot simulate an empty project.")
+
+        sample_count = self.calculate_default_sample_count()  # Number of Monte Carlo scenarios.
+        self.simulate_all_work_packages()  # Draw Z_i, all schedule risks, and total D_i before timing.
+        lag_samples_by_edge = self._simulate_dependency_lags(sample_count)  # Draw all L_{j,i} before timing.
+
+        node_offsets = {node: offset for offset, node in enumerate(order)}  # Convert activity IDs to matrix rows.
+        activity_count = len(order)  # N, the number of activities.
+        starts = np.zeros((activity_count, sample_count), dtype=np.uint32)  # S_i samples.
+        finishes = np.zeros((activity_count, sample_count), dtype=np.uint32)  # T_i samples.
+        critical_by_node = np.zeros(  # B_i vectors for every i and scenario.
+            (activity_count, activity_count, sample_count),
+            dtype=np.bool_,
+        )
+
+        for node in order:
+            node_offset = node_offsets[node]  # Row for activity i.
+            duration_samples = self.work_packages[node].duration_samples  # Total sampled D_i.
+            if duration_samples is None:
+                raise RuntimeError(f"duration samples are missing for activity {node}.")
+            predecessor_nodes = list(self.graph.predecessors(node))  # Pred(i).
+
+            if not predecessor_nodes:
+                starts[node_offset] = np.zeros(sample_count, dtype=np.uint32)  # S_i = 0.
+                critical_by_node[node_offset, node_offset, :] = True  # B_i(i) = 1.
+            else:
+                predecessor_finish_lags = np.stack(  # Q_i = (T_j + L_{j,i})_{j in Pred(i)}.
+                    [
+                        finishes[node_offsets[predecessor]].astype(np.uint64)  # T_j.
+                        + lag_samples_by_edge[(predecessor, node)].astype(np.uint64)  # L_{j,i}.
+                        for predecessor in predecessor_nodes
+                    ],
+                    axis=0,  # Rows index predecessors; columns index samples.
+                )
+                if np.any(predecessor_finish_lags > UINT32_MAX):
+                    raise OverflowError("start times exceed uint32 capacity.")
+
+                starts[node_offset] = np.max(predecessor_finish_lags, axis=0).astype(np.uint32, copy=False)  # S_i=max Q_i.
+                tied_predecessors = predecessor_finish_lags == starts[node_offset][np.newaxis, :]  # M_i per scenario.
+                critical_by_node[node_offset, node_offset, :] = True  # e_i contribution to B_i.
+                for predecessor_offset, predecessor in enumerate(predecessor_nodes):
+                    sample_mask = tied_predecessors[predecessor_offset]  # Samples where predecessor is in M_i.
+                    if np.any(sample_mask):
+                        critical_by_node[node_offset, :, sample_mask] |= critical_by_node[
+                            node_offsets[predecessor],
+                            :,
+                            sample_mask,
+                        ]  # B_i <- B_i OR B_j for tied predecessor j.
+
+            row_finishes = (  # T_i = S_i + D_i.
+                starts[node_offset].astype(np.uint64)  # S_i, widened before addition.
+                + duration_samples.astype(np.uint64)  # D_i, widened before addition.
+            )
+            if np.any(row_finishes > UINT32_MAX):
+                raise OverflowError("project finish times exceed uint32 capacity.")
+            finishes[node_offset] = row_finishes.astype(np.uint32, copy=False)  # Store sampled T_i.
+            self.work_packages[node].set_timing_samples(  # Store sampled timing output on the activity itself.
+                starts[node_offset],
+                finishes[node_offset],
+            )
+
+        completion_times = np.max(finishes, axis=0)  # T_project = max_i T_i.
+        terminal_ties = finishes == completion_times[np.newaxis, :]  # R = {i: T_i = T_project}.
+        critical_activities = np.zeros((activity_count, sample_count), dtype=np.bool_)  # C per scenario.
+        for node_offset in range(activity_count):
+            sample_mask = terminal_ties[node_offset]  # Samples where i is in R.
+            if np.any(sample_mask):
+                critical_activities[:, sample_mask] |= critical_by_node[
+                    node_offset,
+                    :,
+                    sample_mask,
+                ]  # C <- C OR B_i for tied project finish node i.
+
+        return {
+            "starts": starts,  # S_i samples, rows follow topological_order.
+            "finishes": finishes,  # T_i samples, rows follow topological_order.
+            "completion_times": completion_times.astype(np.uint32, copy=False),  # T_project samples.
+            "critical_activities": critical_activities,  # Boolean C vectors for all scenarios.
+            "topological_order": order,  # Row labels for starts, finishes, and critical_activities.
+            "lag_samples_by_edge": lag_samples_by_edge,  # L_{j,i} samples kept separate from D_i.
+        }
 
     def _ensure_duration_samples(self, sample_count: int) -> None:
         for work_package in self.work_packages.values():
             samples = work_package.duration_samples  # Existing sample vector D_i, if any.
             if samples is None or len(samples) != sample_count:
                 work_package.simulate_duration(sample_count, self.rng)  # Draw D_i when missing/stale.
+
+    def _simulate_dependency_lags(
+        self,
+        sample_count: int,
+    ) -> dict[tuple[int, int], NDArray[np.uint32]]:
+        """Sample every dependency lag L_{j,i} without adding it to D_i."""
+        lag_samples_by_edge: dict[tuple[int, int], NDArray[np.uint32]] = {}  # Maps edge (j, i) to L_{j,i}.
+        for predecessor, successor, edge_data in self.graph.edges(data=True):
+            lag_model = edge_data.get("lag_model", DeterministicLag(0))  # Old edges default to zero lag.
+            samples = np.asarray(lag_model.sample(sample_count, self.rng))  # Draw the lag vector for this dependency.
+            if samples.shape != (sample_count,):
+                raise ValueError("lag samples must be a vector of length sample_count.")
+            if np.any(samples < 0) or np.any(samples > UINT32_MAX):
+                raise ValueError("lag samples must be nonnegative and fit in uint32.")
+            if samples.dtype != np.uint32:
+                samples = samples.astype(np.uint32, copy=False)  # Store L_{j,i} as nonnegative integer time.
+            lag_samples_by_edge[(predecessor, successor)] = samples  # Keep lag separate from activity duration.
+            self.work_packages[successor].set_lag_samples(predecessor, samples)  # Store incoming L_{j,i} on activity i.
+        return lag_samples_by_edge
 
     def _normalize_complete_paths(
         self,
@@ -459,6 +662,15 @@ def _build_critical_paths(
         path.reverse()  # Convert backward trace into chronological order.
         critical_paths.append(path)  # Store this sample's critical path.
     return critical_paths
+
+
+def _coerce_lag_model(lag: int | LagModel) -> LagModel:
+    """Return a lag model, converting plain integers to deterministic lag."""
+    if isinstance(lag, Integral):
+        return DeterministicLag(int(lag))  # User-facing shorthand for fixed L_{j,i}.
+    if not hasattr(lag, "sample"):
+        raise TypeError("lag must be an integer or lag model.")
+    return lag  # Future random lag models can satisfy LagModel without project changes.
 
 
 def _poisson_pmf(lambda_: float, k: int) -> np.longdouble:
