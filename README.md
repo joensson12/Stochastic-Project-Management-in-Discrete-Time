@@ -8,5 +8,3 @@ models, and vectorized NetworkX-based project completion simulation.
 For a developer-oriented explanation of the package structure, simulation flow,
 and extension points, see [`docs/software-architecture.md`](docs/software-architecture.md).
 
-## LibreProject/MS Project XML Prototype
-
