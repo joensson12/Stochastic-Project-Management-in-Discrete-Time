@@ -76,7 +76,7 @@ This is a screening metric, not a promise that reducing one activity by one day 
 
 The report also validates the Monte Carlo timing simulation against an exact completion-time calculation for a small shifted-Poisson network.
 
-![Exact CDF versus Monte Carlo CDF](mc_cdf_validation_outputs_poisson_exp/figures/01_discrete_cdf_exact_vs_monte_carlo.png)
+![Exact CDF versus Monte Carlo CDF](Report files/mc_cdf_validation_outputs_poisson_exp/figures/01_discrete_cdf_exact_vs_monte_carlo.png)
 
 This matters because project-network simulation can be subtle: parallel paths, merge activities, shared work packages, and changing critical paths can all create errors if the algorithm is wrong. The validation benchmark checks that the simulated completion-time distribution behaves as expected and helps make the algorithmic behavior visible.
 
@@ -84,7 +84,7 @@ This matters because project-network simulation can be subtle: parallel paths, m
 
 The full technical background is available here:
 
-[Open the technical report](Latex%20and%20PDF%20files/Probabilistic_foundation_for_Project_Management__Johan_J%C3%B6nsson.pdf)
+[Open the technical report](Report files/Stochastic_Project_Management_in_Discrete_Time__A_Probability_Based_Simulation_Framework_for_Project_Time__Cost__and_Risk.pdf)
 
 The report develops:
 
