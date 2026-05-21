@@ -35,6 +35,10 @@ This repository takes a different approach. The mathematical definitions, simula
 
 This is especially relevant with modern AI-assisted analysis. Large simulation outputs can be processed together with AI through code, for example in Python notebooks. That gives AI access to detailed scenario data while preserving transparency: the suggested analysis, transformations, plots, and calculations can be inspected as code instead of disappearing into a black-box conversation.
 
+### AI Transparency Disclaimer
+
+The mathematical framework, including pseudocode, was developed by the author. AI has only supported the work by assisting in cleaning up and fixing details. The code was developed together with AI tools based on the mathematical framework.
+
 ## What Has Been Built
 
 This repository contains both the mathematical foundation and a working Python implementation.
@@ -59,7 +63,7 @@ The implementation is intentionally inspectable. The simulator core is separate 
 
 One of the main diagnostics developed in the technical report combines cost exposure and schedule exposure at the work-package level.
 
-![Activity cost ratio and critical-time ratio metric](report_outputs/figures/activity_cost_ratio_vs_critical_time_ratio.png)
+![Activity cost ratio and critical-time ratio metric](Report%20files/report_outputs/figures/activity_cost_ratio_vs_critical_time_ratio.png)
 
 The horizontal axis measures how much of project completion time an activity contributes in scenarios where it is critical. The vertical axis measures the activity's share of total project cost. Point size and color represent how often the activity appears on a critical path.
 
@@ -76,7 +80,7 @@ This is a screening metric, not a promise that reducing one activity by one day 
 
 The report also validates the Monte Carlo timing simulation against an exact completion-time calculation for a small shifted-Poisson network.
 
-![Exact CDF versus Monte Carlo CDF](Report files/mc_cdf_validation_outputs_poisson_exp/figures/01_discrete_cdf_exact_vs_monte_carlo.png)
+![Exact CDF versus Monte Carlo CDF](Report%20files/mc_cdf_validation_outputs_poisson_exp/figures/01_discrete_cdf_exact_vs_monte_carlo.png)
 
 This matters because project-network simulation can be subtle: parallel paths, merge activities, shared work packages, and changing critical paths can all create errors if the algorithm is wrong. The validation benchmark checks that the simulated completion-time distribution behaves as expected and helps make the algorithmic behavior visible.
 
@@ -84,7 +88,7 @@ This matters because project-network simulation can be subtle: parallel paths, m
 
 The full technical background is available here:
 
-[Open the technical report](Report files/Stochastic_Project_Management_in_Discrete_Time__A_Probability_Based_Simulation_Framework_for_Project_Time__Cost__and_Risk.pdf)
+[Open the technical report](Report%20files/Stochastic_Project_Management_in_Discrete_Time__A_Probability_Based_Simulation_Framework_for_Project_Time__Cost__and_Risk.pdf)
 
 The report develops:
 
