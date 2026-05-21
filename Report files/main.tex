@@ -110,7 +110,7 @@
 % ------------------------------------------------------------
 % Document information
 % ------------------------------------------------------------
-\title{Probabilistic Foundations for Project Management}
+\title{Stochastic Project Management in Discrete Time: A Probability-Based Simulation Framework for Project Time, Cost, and Risk}
 \author{Johan Jönsson}
 \date{\today}
 
@@ -1840,7 +1840,7 @@ Compared with a traditional probability-impact matrix, this diagnostic has the a
 
 % ============================================================
 % ============================================================
-\section{Useful Theorems for Analytical Expected-Value Checks}
+\section{Theorems for Analytical solutions}
 % ============================================================
 
 The following result is useful for diagnosing the Monte Carlo simulation. It gives an analytical expected-value expression that the simulated sample mean can be compared against. This is especially useful for cost, because total project cost is built by adding work-package costs and project-level costs.
@@ -2208,10 +2208,13 @@ This proof is intentionally performed without using conditional independence as 
 
 \newpage
 
+% ============================================================
 \section{Mathematical niceties}
+% ============================================================
 
- These are observations that might be useful in future work but mostly here as a mathematical curiosity and mostly serves as a way for me on how to think about the modeling and serve as inspiration for future work. Especially if one wants to apply Reinforcment Learning.
+This section collects a few mathematical observations that are not needed for the main simulation results, but that are useful for understanding the structure of the model. They are included mainly as future work and as a way to clarify how the project model should be interpreted when the project evolves over time. This perspective is especially relevant if one later wants to connect the framework to sequential decision-making or reinforcement learning.
 
+The main idea is that the model should be non-anticipative. In practical terms, this means that the model should not need information from the future to decide whether an activity has started, whether it has finished, or whether the project has reached completion. At any time $t$, the information available to the model is represented by $\cF_t$, and project quantities that are known by time $t$ should be measurable with respect to $\cF_t$.
 
 A fundamental requirement is that the model should not need information from the future to determine whether an activity has started and finished after a given duration. If activity $i$ starts at time $m$ and has duration $k$, then the activity finishes at time $m+k$. Therefore, the event
 \[
@@ -2222,51 +2225,98 @@ should be observable using the information available up to time $m+k$. In mathem
 \{S_i=m\}\cap \{D_i = k\} \in \cF_{m+k}.
 \]
 
-The intuition is that we can only confirm this exact outcome after enough time has passed. First, we need to know that the activity started at time $m$. Then we need to observe that it lasted exactly $k$ time units. This information is available by time $m+k$, when the activity has finished. In general, we will not require this event to be measurable with respect to $\cF_t$ for $t<m+k$, since that would mean that the model can determine the exact duration before the activity has had enough time to finish. This condition does not primarily reflect uncertainty about the duration, but rather the information structure of the model. Even if an activity has a deterministic duration, the model should only require the event to be decidable once the relevant time has been reached. In other words, the event should be measurable with respect to the information available at time $m+k$, because this is the time at which we can determine whether the activity started at $m$ and lasted exactly $k$ time units. We then  observe an important theorem 
+The intuition is that we can only confirm this exact outcome after enough time has passed. First, we need to know that the activity started at time $m$. Then we need to observe that it lasted exactly $k$ time units. This information is available by time $m+k$, when the activity has finished. In general, we should not require this event to be measurable with respect to $\cF_t$ for $t<m+k$, since that would mean that the model can determine the exact duration before the activity has had enough time to finish.
+
+This condition does not primarily reflect uncertainty about the duration, but rather the information structure of the model. Even if an activity has a deterministic duration, the model should only require the event to be decidable once the relevant time has been reached.
+
 \begin{theorem}
-    Each end time $T_i$ for each activity is a stopping time
+Each activity finish time $T_i$ is a stopping time.
 \end{theorem}
+
 \begin{proof}
-    We remember that from the definition of a stopping time is that if $\{T_i=n\} \in \cF_{n}$. This holds since $T_i=S_i+D_i$ which means that we express the event as union of $S_i$ and $D_i$ events.
-    \[
-\{T_i=n\} = \bigcup_{m=0}^{n} \{S_i=m\}\cap \{D_i = n-m\} \in \cF_{n}
+We remember that from the definition of a stopping time is that if $\{T_i=n\} \in \cF_{n}$. This holds since $T_i=S_i+D_i$ which means that we express the event as union of $S_i$ and $D_i$ events.
+\[
+\{T_i=n\} = \bigcup_{m=0}^{n} \{S_i=m\}\cap \{D_i = n-m\} \in \cF_{n}.
 \]
 Thus it is a stopping time.
 \end{proof}
-    The following theorem follows almost immediate.
-    \begin{theorem}
-    Each end time $T_{Porject}$ for each activity is a stopping time
+
+The following theorem follows almost immediately.
+
+\begin{theorem}
+The project completion time $T_{\text{Project}}$ is a stopping time.
 \end{theorem}
+
 \begin{proof}
-    We remember that from the definition of a stopping time is that if $\{T_{Porject}=n\} \in \cF_{n}$. We then observe that we can rewrite
-    \[
-    \{T_{Porject}=n\} = \{\max_{i\in\mathcal{W}}T_i = n\}=\bigcup_{i\in\mathcal{W}}\Bigl( \{T_i = n\} \bigcap_{j\in\mathcal{W}\setminus \{i\}} \{T_j \leq  n\} \Bigr )
-    \]
-    Then we know $\{T_i \leq  n\} \in \cF_n$ and $\{T_i =  n\} \in \cF_n$. We also have that any finite intersection and union are in $\cF_n$. Thus we get that
-    \[
-    \{T_{Porject}=n\} \in \cF_n
-    \]
-    Thus it is a stopping time.
-\end{proof}
-   \begin{theorem}
-    Each start time $S_i$ for each activity is a stopping time.
-\end{theorem} 
-\begin{proof}
-    We first observe that $S_1=0$ which clearly is a stopping time. Then we remember that
-    \[
-    S_i=\max_{j\in \Pred(i)}(T_j+L_{i,j})
-    \]
-    Which means that
-    \[
-    \{S_i=n\} = \bigcup_{j\in \Pred(i)}\Bigl( \{T_j+L_{i,j} = n\} \cap\bigcap_{k\in\mathcal{W}\setminus \{j\}} \{T_k+L_k \leq  n\} \Bigr )
-    \]
-    We use the same reasoning before that we can only have that for $S_i+D_i$ whcih means that $\{T_j+L_{i,j} = n\} \in \cF_n$ and thus we easily conclude that 
-    \[
-    \{S_i=n\} \in  \cF_n
-    \]
-    What this says is that we can't be sure if a workproject can begin the next if we dont now that it the other work packages plus lag its doesn't exceed the $n$. 
+We remember that from the definition of a stopping time is that if $\{T_{\text{Project}}=n\} \in \cF_{n}$. We then observe that we can rewrite
+\[
+\{T_{\text{Project}}=n\}
+=
+\left\{\max_{i\in\mathcal{W}}T_i = n\right\}
+=
+\bigcup_{i\in\mathcal{W}}
+\Bigl(
+\{T_i = n\}
+\cap
+\bigcap_{j\in\mathcal{W}\setminus \{i\}}
+\{T_j \leq n\}
+\Bigr).
+\]
+Then we know $\{T_i \leq n\} \in \cF_n$ and $\{T_i = n\} \in \cF_n$. We also have that any finite intersection and union are in $\cF_n$. Thus we get that
+\[
+\{T_{\text{Project}}=n\} \in \cF_n.
+\]
+Thus it is a stopping time.
 \end{proof}
 
+The next result shows that the start times generated by the project network also fit the same information structure. Here we assume that the lags $L_{j,i}$ are deterministic nonnegative integers. If the lags are random, then an additional measurability assumption is needed to ensure that $T_j+L_{j,i}$ is a stopping time.
 
+\begin{theorem}
+Each activity start time $S_i$ is a stopping time.
+\end{theorem}
 
+\begin{proof}
+If activity $i$ has no predecessors, then
+\[
+S_i=0,
+\]
+which is clearly a stopping time.
+
+Now assume that $\Pred(i)\neq\emptyset$ and that the predecessor finish times $T_j$, $j\in\Pred(i)$, are stopping times. We have
+\[
+S_i=\max_{j\in \Pred(i)}(T_j+L_{j,i}).
+\]
+For each predecessor $j\in\Pred(i)$, define
+\[
+U_{j,i}=T_j+L_{j,i}.
+\]
+Since $L_{j,i}$ is a deterministic nonnegative integer and $T_j$ is a stopping time, we have
+\[
+\{U_{j,i}=n\}
+=
+\{T_j=n-L_{j,i}\}
+\in \cF_n,
+\]
+where the event is interpreted as empty if $n<L_{j,i}$. Hence each $U_{j,i}$ is a stopping time.
+
+We can now write
+\[
+\{S_i=n\}
+=
+\bigcup_{j\in \Pred(i)}
+\Bigl(
+\{U_{j,i}=n\}
+\cap
+\bigcap_{k\in\Pred(i)}
+\{U_{k,i}\leq n\}
+\Bigr).
+\]
+Each event $\{U_{j,i}=n\}$ belongs to $\cF_n$, and each event $\{U_{k,i}\leq n\}$ also belongs to $\cF_n$. Since $\Pred(i)$ is finite, the finite intersections and finite union also belong to $\cF_n$. Therefore,
+\[
+\{S_i=n\}\in\cF_n.
+\]
+Thus $S_i$ is a stopping time.
+\end{proof}
+
+This observation is useful conceptually. It says that the start time, finish time, and project completion time can all be treated as times that are determined by the information available up to those times. This is exactly the type of structure one would want in future extensions where decisions are made during project execution, for example when choosing mitigation actions, reallocating resources, or applying reinforcement learning methods to project control.
 \end{document}

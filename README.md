@@ -1,10 +1,12 @@
-# SPM
+# Stochastic Project Management in Discrete Time
 
-**SPM is a transparent stochastic project-management simulation prototype for understanding project time, cost, and risk under uncertainty.**
+**Stochastic Project Management in Discrete Time is a transparent simulation and analysis platform for practitioners who want to understand project time, cost, and risk under uncertainty.**
 
-Most project plans are presented as one deterministic schedule: one duration, one finish date, one budget. Real projects do not behave that cleanly. Activity durations vary, risks occur or do not occur, costs move with time, and the critical path can change from one scenario to another.
+The project is aimed especially at practitioners of project risk management, including those working with integrated cost and schedule risk analysis. Most project plans are presented as one deterministic schedule: one duration, one finish date, one budget. Real projects do not behave that cleanly. Activity durations vary, risks occur or do not occur, costs move with time, and the critical path can change from one scenario to another.
 
-This project turns that uncertainty into something project managers can inspect. It models a project as a network of work packages, simulates many possible project outcomes, and reports where time, cost, and risk exposure concentrate.
+This project gives an introduction to project risk management in discrete time and rephrases familiar planning concepts in the language of probability theory. It models a project as a network of work packages, simulates many possible project outcomes, and reports where time, cost, and risk exposure concentrate.
+
+The purpose is not only to produce simulation outputs, but to make the underlying algorithms transparent to practitioners. It is less polished than commercial tools with simple point-and-click interfaces, but it is easier to inspect, adapt, and build upon. Simulation data can be exported or handled directly in Python notebooks, processed for the exact needs of a project team, and moved into Excel when that is the right medium for reporting or further analysis.
 
 ## Why This Matters
 
@@ -14,7 +16,7 @@ Traditional project risk tools often separate the conversation into different bo
 - cost analysis asks where budget exposure sits
 - risk registers rank events using probability-impact scores
 
-SPM connects those views in one probabilistic framework. The goal is not only to produce a simulation result, but to make the assumptions behind that result visible, testable, and changeable.
+This project connects those views in one probabilistic framework. The goal is to help project risk practitioners see how the analysis is constructed: which assumptions enter the model, how they are sampled, how the project network is evaluated, and how cost and schedule exposure emerge from the simulated scenarios.
 
 For a project manager, this helps answer questions like:
 
@@ -24,6 +26,14 @@ For a project manager, this helps answer questions like:
 - Which risks drive schedule impact, cost impact, or both?
 - Where do cost exposure and schedule-critical exposure overlap?
 - Are the simulated expected values consistent with analytical checks?
+
+## Transparency, Not a Black Box
+
+Many project risk workflows rely on software that hides important analytical choices behind the interface. That can be convenient, but it can also make it difficult to understand why a result appears, how sensitive it is to assumptions, or how to adapt the analysis to a particular decision.
+
+This repository takes a different approach. The mathematical definitions, simulation logic, validation checks, and import/export workflows are kept close together. Practitioners can trace how discrete-time probability models are translated into project outcomes, then modify or extend the process when their project requires a different treatment of cost, schedule, dependencies, risks, or reporting.
+
+This is especially relevant with modern AI-assisted analysis. Large simulation outputs can be processed together with AI through code, for example in Python notebooks. That gives AI access to detailed scenario data while preserving transparency: the suggested analysis, transformations, plots, and calculations can be inspected as code instead of disappearing into a black-box conversation.
 
 ## What Has Been Built
 
@@ -43,7 +53,7 @@ The current prototype supports:
 - LibreProject/MS Project XML import
 - cleaned Excel workbook import for activities and risks
 
-The implementation is intentionally inspectable. The simulator core is separate from notebook-facing importers, so project-management data can be translated into a clean model without hiding the assumptions inside a black box.
+The implementation is intentionally inspectable. The simulator core is separate from notebook-facing importers, so project-management data can be translated into a clean model without hiding the assumptions inside a black box. The result is a platform that is useful for learning, experimentation, validation, and building customized risk-analysis workflows.
 
 ## Example Diagnostic
 
@@ -60,7 +70,7 @@ In practical terms:
 - high-critical-time but low-cost activities matter mainly for schedule control
 - frequently critical activities are natural candidates for closer monitoring
 
-This is a screening metric, not a promise that reducing one activity by one day will always reduce the whole project by one day. Its value is that it gives project managers a structured way to decide where deeper analysis is worth doing.
+This is a screening metric, not a promise that reducing one activity by one day will always reduce the whole project by one day. Its value is that it gives project risk practitioners a structured way to decide where deeper analysis is worth doing.
 
 ## Validation Example
 
@@ -68,7 +78,7 @@ The report also validates the Monte Carlo timing simulation against an exact com
 
 ![Exact CDF versus Monte Carlo CDF](mc_cdf_validation_outputs_poisson_exp/figures/01_discrete_cdf_exact_vs_monte_carlo.png)
 
-This matters because project-network simulation can be subtle: parallel paths, merge activities, shared work packages, and changing critical paths can all create errors if the algorithm is wrong. The validation benchmark checks that the simulated completion-time distribution behaves as expected.
+This matters because project-network simulation can be subtle: parallel paths, merge activities, shared work packages, and changing critical paths can all create errors if the algorithm is wrong. The validation benchmark checks that the simulated completion-time distribution behaves as expected and helps make the algorithmic behavior visible.
 
 ## Technical Report
 
@@ -99,6 +109,8 @@ src/spm/
 ```
 
 For a developer-oriented explanation of the package structure, simulation flow, and extension points, see [`docs/software-architecture.md`](docs/software-architecture.md).
+
+Practitioners can use this structure as a starting point for notebook-based analysis: import a project, run simulations, extract detailed scenario-level or activity-level outputs, create custom plots, compare assumptions, and export selected results to Excel for communication with the wider project team.
 
 ## Quick Start
 
@@ -186,4 +198,6 @@ print(project.expected_project_cost())
 
 ## Current Status
 
-This is a prototype, not a commercial scheduling product. The strength of the project is that it connects project-management concepts, probability assumptions, simulation algorithms, validation checks, and software implementation in one inspectable framework.
+This is a prototype, not a commercial scheduling product. Its strength is that it connects project-management concepts, probability assumptions, simulation algorithms, validation checks, and software implementation in one inspectable framework.
+
+For practitioners, the tradeoff is deliberate: the interface is less simple than a commercial risk tool, but the analysis is more open. You can see the probability model, inspect the simulation data, process the results in notebooks, export data to Excel, and build customized workflows for integrated cost and schedule risk analysis.
